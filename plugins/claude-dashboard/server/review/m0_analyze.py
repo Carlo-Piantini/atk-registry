@@ -4,6 +4,7 @@ Usage (from server/, with the plugin venv for pydantic):
     ../.venv/bin/python -m review.m0_analyze <corpus.json> <out_dir> <ticket_id> [model]
 
 Reads the corpus the same way m0_bench does; writes <ticket_id>.analysis.json
+(or <CCD_REVIEW_RUN_NAME>.analysis.json, to keep experiment runs apart)
 (groups, steps, problems, per-call metrics) to out_dir.
 """
 
@@ -15,7 +16,7 @@ import sys
 import time
 from dataclasses import asdict
 
-from .analysis import analyze
+from .analysis import EFFORT, analyze
 from .diff import collect
 from .provenance import attribute, scan, transcripts_from_glob
 from .structure import analyze as structure
@@ -48,7 +49,9 @@ def main(corpus_path: str, out_dir: str, ticket_id: str, model: str = "sonnet") 
         "problems": len(a.problems),
     }
     os.makedirs(out_dir, exist_ok=True)
-    with open(os.path.join(out_dir, f"{ticket_id}.analysis.json"), "w") as fh:
+    summary["effort"] = dict(EFFORT)
+    name = os.environ.get("CCD_REVIEW_RUN_NAME") or ticket_id
+    with open(os.path.join(out_dir, f"{name}.analysis.json"), "w") as fh:
         json.dump({"summary": summary, "groups": a.groups, "skim": a.skim, "files": a.files,
                    "problems": a.problems, "calls": [asdict(c) for c in a.calls]}, fh, indent=1)
     print(json.dumps(summary))

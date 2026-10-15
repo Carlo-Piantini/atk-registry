@@ -220,6 +220,55 @@ def test_order_ignores_test_imports_and_records_builds_on():
     assert out[1]["builds_on"] == ["gx"] and out[0]["builds_on"] == []
 
 
+# ─── step coverage (ranged hunks) ──────────────────────────────────────
+
+def test_claim_splits_ranges_and_first_claim_wins():
+    from review.analysis import _claim
+    ids = {"h1": ("a.ts", "H1"), "h2": ("a.ts", "H2"), "h9": ("b.ts", "H9")}
+    sizes = {"H1": 100, "H2": 5, "H9": 3}
+    claimed: dict = {}
+    assert _claim(["h1:1-40", "h2"], ids, "a.ts", sizes, claimed) == (["H1:1-40", "H2"], 0)
+    # Overlap trimmed to the unclaimed part; other files' hunks are ignored.
+    assert _claim(["h1:30-100", "h9", "bogus"], ids, "a.ts", sizes, claimed) == (["H1:41-100"], 11)
+    assert _claim(["h2"], ids, "a.ts", sizes, claimed) == ([], 5)
+
+
+def test_fill_gaps_attaches_unclaimed_lines_and_reports():
+    from review.analysis import _fill_gaps
+    ids = {"h1": ("a.ts", "H1"), "h2": ("a.ts", "H2")}
+    sizes = {"H1": 10, "H2": 4}
+    files = {"a.ts": [{"title": "t", "hunks": ["H1:1-4"]}]}
+    claimed = {"H1": set(range(1, 5))}
+    problems: list = []
+    _fill_gaps({"id": "g1"}, ids, sizes, claimed, files, problems)
+    assert files["a.ts"][0]["hunks"] == ["H1"]  # adjacent gap merged back into one ref
+    assert files["a.ts"][1]["title"] == "Remaining changes" and files["a.ts"][1]["hunks"] == ["H2"]
+    assert len(problems) == 2
+
+
+def test_fill_gaps_gives_blank_separators_to_the_neighbour_quietly():
+    from review.analysis import _fill_gaps
+    ids = {"h1": ("a.ts", "H1")}
+    sizes = {"H1": 9}
+    files = {"a.ts": [{"title": "one", "hunks": ["H1:1-4"]}, {"title": "two", "hunks": ["H1:6-9"]}]}
+    problems: list = []
+    _fill_gaps({"id": "g"}, ids, sizes, {"H1": {1, 2, 3, 4, 6, 7, 8, 9}}, files, problems, {"H1": {5}})
+    assert files["a.ts"][0]["hunks"] == ["H1:1-5"] and files["a.ts"][1]["hunks"] == ["H1:6-9"]
+    assert problems == []
+
+
+def test_chunk_groups_packs_files_under_budget():
+    from review.analysis import chunk_groups
+    from review.diff import FileDiff, Hunk, ReviewDiff
+    def fd(p, n):
+        return FileDiff(path=p, old_path=None, status="A", hunks=[Hunk(1, 0, 1, n, "", ["+x" * 4] * n)])
+    d = ReviewDiff("r", "b", "h", "b", "h", [fd("a", 10), fd("b", 10), fd("c", 30)], "x")
+    units = chunk_groups([{"id": "g1", "title": "t", "files": ["a", "b", "c"]},
+                          {"id": "g2", "title": "u", "files": []}], d, budget=200)
+    assert [(u["id"], u["files"]) for u in units] == [("g1.1", ["a", "b"]), ("g1.2", ["c"])]
+    assert units[0]["title"] == "t"
+
+
 # ─── analysis output parsing ───────────────────────────────────────────
 
 def test_extract_json_tolerates_br_line_breaks():
@@ -227,6 +276,9 @@ def test_extract_json_tolerates_br_line_breaks():
     body = '<json><br/>{"files": [<br/>{"t": "<td>x<br/>y</td>"}]}</json>'
     assert _extract_json(body) == {"files": [{"t": "<td>x\ny</td>"}]}
     assert _extract_json('```json\n{"a": 1}\n```') == {"a": 1}
+    assert _extract_json('<json><tasks>\n<json>{"a": 2}') == {"a": 2}
+    assert _extract_json('<json>{"a": 3}</json> {"b": 1}') == {"a": 3}
+    assert _extract_json('Sure! Here it is: {"a": 4} hope that helps') == {"a": 4}
 
 
 if __name__ == "__main__":

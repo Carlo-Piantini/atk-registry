@@ -275,17 +275,25 @@ function group(gid) {
         <span class="small muted">· ${n} step${n === 1 ? "" : "s"}</span>${label}</div></div>`; }).join("")}</div>`;
 }
 
-function hunkHtml(h) {
+// A step ref is a hunk hash, or "hash:a-b" for lines a..b (1-based) of it.
+const parseRef = r => { const [h, rg] = r.split(":"); if (!rg) return { h };
+  const [a, b] = rg.split("-").map(Number); return { h, a, b }; };
+function hunkHtml(ref) {
+  const { h: hh, a, b } = parseRef(ref), h = D.hunks[hh];
+  if (!h) return "";
   let o = h.old, n = h.new;
-  const rows = h.lines.map(l => { const t = l[0], body = esc(l.slice(1));
+  const from = a ? a - 1 : 0, to = b || h.lines.length;
+  h.lines.slice(0, from).forEach(l => { if (l[0] !== "+") o++; if (l[0] !== "-") n++; });
+  const rows = h.lines.slice(from, to).map(l => { const t = l[0], body = esc(l.slice(1));
     if (t === "+") return `<div class="ln a"><span class="n"></span><span class="n">${n++}</span><span>+${body}</span></div>`;
     if (t === "-") return `<div class="ln d"><span class="n">${o++}</span><span class="n"></span><span>-${body}</span></div>`;
     return `<div class="ln"><span class="n">${o++}</span><span class="n">${n++}</span><span> ${body}</span></div>`; }).join("");
-  return `<div class="hh">@@ −${h.old} +${h.new} @@ ${esc(h.header)}</div>${rows}`;
+  const part = a ? ` · lines ${a}–${b} of ${h.lines.length}` : "";
+  return `<div class="hh">@@ −${h.old} +${h.new} @@ ${esc(h.header)}${part}</div>${rows}`;
 }
 
 function provBadge(st) {
-  const ps = st.hunks.map(h => D.prov[h]).filter(Boolean), att = ps.filter(p => p.status === "attributed");
+  const ps = st.hunks.map(r => D.prov[parseRef(r).h]).filter(Boolean), att = ps.filter(p => p.status === "attributed");
   if (ps.length && att.length === ps.length) { const t = att[0].tool;
     return `<span class="chip ok" title="Every hunk in this step matches a transcript action">traced to ${t === "Bash" ? "a shell edit" : "an agent edit"}${att[0].subagent ? " (subagent)" : ""}</span>`; }
   if (att.length) return `<span class="chip warn">partly traced</span>`;
@@ -299,7 +307,7 @@ function file(gid, path, idx) {
   const st = ss[idx];
   if (!st) return `<div class="top"><div class="crumbs"><a href="#/">Review</a> / <a href="#/g/${gid}">${esc(g.title)}</a> / ${esc(base(path))}</div></div><div class="card">No steps for this file.</div>`;
   const k = stepKey(path, idx), v = S.v[k] || {};
-  const narr = st.hunks.map(h => (D.prov[h] || {}).narration).filter(Boolean);
+  const narr = st.hunks.map(r => (D.prov[parseRef(r).h] || {}).narration).filter(Boolean);
   const vis = st.visual || {};
   if (vis.kind === "mermaid" && vis.body) setTimeout(() => drawMermaid(document.getElementById("vis"), vis.body));
   window.__step = { gid, path, idx, n: ss.length };
@@ -308,7 +316,7 @@ function file(gid, path, idx) {
     <span class="small muted">Step ${idx + 1} of ${ss.length}</span></div>
   <div class="dots" style="margin-bottom:12px">${ss.map((_, i) => `<a href="#/f/${gid}/${encodeURIComponent(path)}/${i}" class="${i === idx ? "on" : ""} ${(S.v[stepKey(path, i)] || {}).v || ""}"></a>`).join("")}</div>
   <div class="cols">
-    <div class="code">${st.hunks.map(h => D.hunks[h] ? hunkHtml(D.hunks[h]) : "").join("")}</div>
+    <div class="code">${st.hunks.map(hunkHtml).join("")}</div>
     <div class="panel">
       <div class="card"><h2>${esc(st.title)}</h2><div class="small muted" style="word-break:break-all">${esc(path)}</div></div>
       <div class="card"><div class="lbl">What it does</div>${md(st.what)}</div>
@@ -342,8 +350,8 @@ function verdict(kind) {
 function feedbackPrompt() {
   const items = [];
   D.groups.forEach(g => g.files.forEach(p => steps(p).forEach((st, i) => { const v = S.v[stepKey(p, i)];
-    if (v && v.v === "changes") { const h = D.hunks[st.hunks[0]];
-      items.push(`- ${p}${h ? ":" + h.new : ""} — "${st.title}"\n  ${v.c}`); } })));
+    if (v && v.v === "changes") { const r0 = parseRef(st.hunks[0]), h = D.hunks[r0.h];
+      items.push(`- ${p}${h ? ":" + (h.new + (r0.a ? r0.a - 1 : 0)) : ""} — "${st.title}"\n  ${v.c}`); } })));
   if (!items.length) return "";
   return `Code review feedback on ${D.id}. Please address each item, then summarise what you changed:\n\n${items.join("\n\n")}`;
 }

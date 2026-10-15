@@ -232,6 +232,7 @@ def invoke_claude(
     model: str,
     timeout: float = DEFAULT_REGEN_TIMEOUT,
     on_proc: "Callable[[subprocess.Popen], None] | None" = None,
+    effort: "str | None" = None,
 ) -> RunResult:
     """Run `claude -p` headlessly. `on_proc` hands the live Popen to the caller so
     the Registry can SIGTERM it on supersede.
@@ -249,6 +250,9 @@ def invoke_claude(
         "--system-prompt", system_prompt,
         "--tools", "",
     ]
+    if effort:
+        # Hidden thinking dominates output tokens, hence wall time.
+        cmd += ["--effort", effort]
     start = time.monotonic()
     proc = _spawn_claude(cmd)
     if on_proc is not None:
