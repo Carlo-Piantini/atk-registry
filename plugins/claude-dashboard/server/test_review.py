@@ -162,6 +162,64 @@ def test_attribute_prefers_edits_on_the_ticket_branch():
     assert prov["src/api/score.ts"].edits[0] == "e1"
 
 
+# ─── group ordering ────────────────────────────────────────────────────
+
+def _st(kinds: dict[str, str], edges: list[tuple[str, str]]):
+    from review.structure import FileInfo, Structure
+    return Structure(files={p: FileInfo(p, k, False) for p, k in kinds.items()}, edges=edges)
+
+
+def _order(groups, st):
+    from review.analysis import order_groups
+    return [g["id"] for g in order_groups([dict(g) for g in groups], st)]
+
+
+def test_order_puts_providers_before_consumers_despite_difficulty():
+    st = _st({"svc.ts": "api", "res.ts": "api"}, [("res.ts", "svc.ts")])
+    groups = [{"id": "res", "difficulty": 1, "files": ["res.ts"]},
+              {"id": "svc", "difficulty": 5, "files": ["svc.ts"]}]
+    assert _order(groups, st) == ["svc", "res"]
+
+
+def test_order_ui_on_generated_types_builds_on_api_groups():
+    st = _st({"page.tsx": "ui", "graphql.ts": "generated", "res.ts": "api"},
+             [("page.tsx", "graphql.ts")])
+    groups = [{"id": "ui", "difficulty": 1, "files": ["page.tsx"]},
+              {"id": "api", "difficulty": 4, "files": ["res.ts"]}]
+    assert _order(groups, st) == ["api", "ui"]
+
+
+def test_order_api_client_files_build_on_api_groups():
+    st = _st({"queries.ts": "source", "res.ts": "api"}, [])
+    st.files["queries.ts"].api_client = True
+    groups = [{"id": "q", "difficulty": 1, "files": ["queries.ts"]},
+              {"id": "api", "difficulty": 5, "files": ["res.ts"]}]
+    assert _order(groups, st) == ["api", "q"]
+    # A client living under an /api/ path is still a client, not a provider.
+    st.files["queries.ts"].kind = "api"
+    assert _order(groups, st) == ["api", "q"]
+
+
+def test_order_test_only_groups_last_even_through_a_cycle():
+    st = _st({"a.tsx": "ui", "b.tsx": "ui", "e2e.spec.ts": "test"},
+             [("a.tsx", "b.tsx"), ("b.tsx", "a.tsx")])
+    groups = [{"id": "e2e", "difficulty": 1, "files": ["e2e.spec.ts"]},
+              {"id": "a", "difficulty": 3, "files": ["a.tsx"]},
+              {"id": "b", "difficulty": 2, "files": ["b.tsx"]}]
+    assert _order(groups, st) == ["b", "a", "e2e"]
+
+
+def test_order_ignores_test_imports_and_records_builds_on():
+    from review.analysis import order_groups
+    st = _st({"x.ts": "api", "x.spec.ts": "test", "y.ts": "api"},
+             [("x.spec.ts", "y.ts"), ("y.ts", "x.ts")])
+    groups = [{"id": "gx", "difficulty": 3, "files": ["x.ts", "x.spec.ts"]},
+              {"id": "gy", "difficulty": 1, "files": ["y.ts"]}]
+    out = order_groups(groups, st)
+    assert [g["id"] for g in out] == ["gx", "gy"]
+    assert out[1]["builds_on"] == ["gx"] and out[0]["builds_on"] == []
+
+
 # ─── analysis output parsing ───────────────────────────────────────────
 
 def test_extract_json_tolerates_br_line_breaks():

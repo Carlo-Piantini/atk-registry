@@ -31,6 +31,12 @@ _IMPORT_RE = re.compile(
 )
 
 
+# Packages whose import marks a file as a client of the app's own API (it
+# talks to the server through queries, not through imports of server code).
+API_CLIENT_PACKAGES = re.compile(
+    r"^(graphql-tag|@apollo/client|urql|@urql/|graphql-request|@tanstack/react-query|swr|openapi-fetch|@trpc/)")
+
+
 @dataclass
 class FileInfo:
     path: str
@@ -38,6 +44,7 @@ class FileInfo:
     skim: bool
     skim_reason: str | None = None
     imports: list[str] = field(default_factory=list)  # changed files it imports
+    api_client: bool = False  # imports a GraphQL/HTTP client package
 
 
 @dataclass
@@ -132,6 +139,8 @@ def analyze(diff: ReviewDiff) -> Structure:
         seen: set[str] = set()
         for m in _IMPORT_RE.finditer(src):
             spec = next(g for g in m.groups() if g)
+            if API_CLIENT_PACKAGES.match(spec):
+                files[f.path].api_client = True
             tgt = _resolve(spec, f.path, changed)
             if tgt and tgt != f.path and tgt not in seen:
                 seen.add(tgt)

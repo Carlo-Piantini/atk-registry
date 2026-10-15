@@ -41,11 +41,16 @@ layer (e.g. seed data, data access, API surface, a UI area). 3-12 files is \
 typical; never one group per file, never one giant group.
 - Tests, stories, and test page-objects go in the group with the code they \
 cover, so they read as evidence for that code.
-- Order: foundations and low-risk first (data, types, seed, config), then the \
-logic that builds on them, then the UI that consumes it. Difficulty 1-5 \
-reflects logic density and risk, not file count.
+- Review order is computed afterwards from the imports: a group is reviewed \
+after every group it builds on. So group along dependency lines: keep a \
+service and the code it needs together or upstream, and never put a \
+consumer (resolver, page) in the same group as an unrelated provider just \
+to balance sizes.
+- difficulty 1-5 reflects logic density and risk, not file count; it only \
+orders groups that don't depend on each other.
 - summary: one short paragraph, plain words: what the group changes and why, \
-from the reviewer's point of view.
+from the reviewer's point of view. Do not refer to other groups by number \
+or position.
 
 Reply with only a JSON object in <json></json> tags:
 {"groups": [{"id": "g1", "title": "...", "difficulty": 1, "summary": "...", \
@@ -217,11 +222,69 @@ def _group_prompt(group: dict, diff: ReviewDiff, prov: dict, edits: dict[str, Ed
     return "\n\n".join(parts), ids
 
 
+TEST_KINDS = ("test", "test-support")
+
+
+def order_groups(groups: list[dict], st: Structure) -> list[dict]:
+    """Review order: a group comes after every group it builds on (a file in
+    it imports a file there, or it consumes generated API types or a query
+    client and they hold API code), difficulty breaks ties, and test-only groups
+    (e2e suites) go last. Cycles fall back to difficulty. Sets each group's
+    `builds_on` to the ids it depends on."""
+    where = {p: g["id"] for g in groups for p in g["files"]}
+    deps: dict[str, set[str]] = {g["id"]: set() for g in groups}
+    for a, b in st.edges:
+        ga, gb = where.get(a), where.get(b)
+        if ga and gb and ga != gb and st.files[a].kind not in TEST_KINDS:
+            deps[ga].add(gb)
+    # Clients reach the API through generated code (GraphQL/OpenAPI types),
+    # which sits in the skim group, so no import edge links them. A group
+    # importing generated code builds on every group holding API code.
+    # API providers only: a frontend's src/api/queries.ts is a client, not the API.
+    api_groups = {g["id"] for g in groups
+                  if any(st.files[p].kind == "api" and not st.files[p].api_client for p in g["files"])}
+    for a, b in st.edges:
+        ga = where.get(a)
+        if (ga and ga not in api_groups and st.files[a].kind not in TEST_KINDS
+                and b in st.files and st.files[b].kind == "generated"):
+            deps[ga] |= api_groups
+    # Same for files that query the API through a client package (gql``).
+    for p, fi in st.files.items():
+        ga = where.get(p)
+        if ga and ga not in api_groups and fi.api_client and fi.kind not in TEST_KINDS:
+            deps[ga] |= api_groups
+    by_id = {g["id"]: g for g in groups}
+    pos = {g["id"]: i for i, g in enumerate(groups)}
+    test_only = {g["id"] for g in groups
+                 if g["files"] and all(st.files[p].kind in TEST_KINDS for p in g["files"])}
+
+    def rank(gid: str) -> tuple:
+        return (gid in test_only, by_id[gid].get("difficulty", 3), pos[gid])
+
+    out: list[str] = []
+    left = set(deps)
+    while left:
+        ready = [g for g in left if not (deps[g] & left)]
+        if not ready or all(g in test_only for g in ready) and left - test_only:
+            # A cycle (routers and pages import each other). Break it at the
+            # group with the fewest unmet dependencies — never by pulling a
+            # test-only group forward.
+            pool = (left - test_only) or left
+            nxt = min(pool, key=lambda g: (len(deps[g] & left),) + rank(g))
+        else:
+            nxt = min(ready, key=rank)
+        out.append(nxt)
+        left.discard(nxt)
+    for gid in out:
+        by_id[gid]["builds_on"] = sorted(deps[gid], key=out.index)
+    return [by_id[g] for g in out]
+
+
 def analyze(diff: ReviewDiff, st: Structure, prov: list[HunkProvenance], edits: dict[str, Edit],
             model: str = "sonnet") -> Analysis:
     context = ticket_context(diff, prov, edits)
     groups, problems, gm = group_files(diff, st, context, model)
-    groups.sort(key=lambda g: g.get("difficulty", 3))  # stable: keeps model order within a level
+    groups = order_groups(groups, st)
     skim = [f.path for f in diff.files if st.files[f.path].skim]
     pmap = {(p.path, p.hunk_hash): p for p in prov}
     result = Analysis(groups=groups, skim=skim, files={}, problems=problems, calls=[gm])
