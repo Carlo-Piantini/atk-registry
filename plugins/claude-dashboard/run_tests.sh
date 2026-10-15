@@ -50,6 +50,7 @@ run server  test_lineage
 run server  test_nav
 run server  test_serve_security
 run server  test_serve_feed
+run server  test_review
 run preview test_preview
 run .       test_manage
 
